@@ -22,15 +22,20 @@ import {
   Camera,
   Loader2
 } from 'lucide-react';
-import { initialVehicles } from './data/mockData';
 import { VehicleData } from './types';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'motion/react';
+import { db, auth } from './firebase';
+import { collection, onSnapshot, updateDoc, doc, addDoc, query, deleteDoc, writeBatch, getDocs } from 'firebase/firestore';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+// Helper to sanitize plate
+const sanitizePlate = (plate: string) => plate.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
 // Toggle Component for Mobile
 const Toggle = ({ active, onClick, label, activeColor = "bg-stone-800" }: { active: boolean, onClick: () => void, label: string, activeColor?: string }) => (
@@ -77,13 +82,15 @@ export default function App() {
         });
         const data = await response.json();
         if (data.vehicles) {
-          const newVehiclesWithIds = data.vehicles.map((v: any, i: number) => ({
-            ...v,
-            id: `ai-${Date.now()}-${i}`,
-            estaNoPatio: false,
-            assinado: false
-          }));
-          setVehicles(prev => [...prev, ...newVehiclesWithIds]);
+          for (const v of data.vehicles) {
+            await addDoc(collection(db, 'vehicles'), {
+              cavalo: sanitizePlate(v.cavalo),
+              carreta: sanitizePlate(v.carreta),
+              destino: v.destino,
+              estaNoPatio: false,
+              assinado: false
+            });
+          }
           setActiveTab('list');
         } else if (data.error) {
            alert(`Erro: ${data.message || data.error}`);
@@ -99,42 +106,59 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  const updateVehicle = (id: string, field: keyof Pick<VehicleData, 'estaNoPatio' | 'assinado'>, value: boolean) => {
-    setVehicles(prev => prev.map(v => v.id === id ? { ...v, [field]: value } : v));
+  const updateVehicle = async (id: string, field: keyof Pick<VehicleData, 'estaNoPatio' | 'assinado'>, value: boolean) => {
+    const vehicleRef = doc(db, 'vehicles', id);
+    await updateDoc(vehicleRef, { [field]: value });
   };
 
-  // Load and Filter Data
+  // Sync Data with Firestore
   useEffect(() => {
-    const saved = localStorage.getItem('patri-control-data-v2');
-    if (saved) {
-      try {
-        setVehicles(JSON.parse(saved));
-      } catch (e) {
-        setVehicles([]);
+    let unsubscribeSnap: any;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Logged in
+        const q = query(collection(db, 'vehicles'));
+        unsubscribeSnap = onSnapshot(q, (snapshot) => {
+          const vehiclesData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          })) as VehicleData[];
+          setVehicles(vehiclesData);
+        }, (err) => {
+           console.error("Snapshot error:", err);
+        });
+      } else {
+        // Not logged in, try signing in
+        signInAnonymously(auth).catch((err) => {
+          if (err.code === 'auth/admin-restricted-operation') {
+            console.error("Anonymous auth not enabled in Firebase project.", err);
+          } else {
+            console.error("Auth error:", err);
+          }
+        });
       }
-    }
+    });
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeSnap) unsubscribeSnap();
+    };
   }, []);
 
-  // Save to localStorage when vehicles change
-  useEffect(() => {
-    if (vehicles.length > 0) {
-      localStorage.setItem('patri-control-data-v2', JSON.stringify(vehicles));
-    }
-  }, [vehicles]);
-
-  const handleImport = () => {
+  const handleImport = async () => {
     if (!importText.trim()) return;
 
     const lines = importText.split('\n');
-    const newVehicles: VehicleData[] = [];
+    let importedCount = 0;
 
-    lines.forEach((line, index) => {
+    for (const line of lines) {
       const columns = line.split('\t');
-      if (columns.length < 15) return; // Basic sanity check
+      if (columns.length < 15) continue; // Basic sanity check
 
       const origem = columns[1]?.toUpperCase() || '';
-      const cavalo = columns[12] || '';
-      const carreta = columns[13] || '';
+      const cavalo = sanitizePlate(columns[12] || '');
+      const carreta = sanitizePlate(columns[13] || '');
       const destino = columns[10] || '';
       const termo = columns[32]?.toLowerCase() || '';
 
@@ -148,22 +172,21 @@ export default function App() {
       const hasTermo = termo === 'sim';
 
       if (isSantaLuzia && !isViana && !isMontesClaros && !hasTermo) {
-        newVehicles.push({
-          id: `import-${Date.now()}-${index}`,
+        await addDoc(collection(db, 'vehicles'), {
           cavalo,
           carreta,
           destino,
           estaNoPatio: false, // Default state
           assinado: false     // Default state
         });
+        importedCount++;
       }
-    });
+    }
 
-    if (newVehicles.length > 0) {
-      setVehicles(newVehicles);
+    if (importedCount > 0) {
       setImportText('');
       setActiveTab('list');
-      alert(`${newVehicles.length} veículos importados com sucesso de Santa Luzia!`);
+      alert(`${importedCount} veículos importados com sucesso de Santa Luzia!`);
     } else {
       alert('Nenhum veículo válido de Santa Luzia (sem termo) foi encontrado nos dados colados.');
     }
@@ -202,27 +225,27 @@ export default function App() {
   }, [vehicles]);
 
   return (
-    <div className="min-h-screen pb-32 bg-rustic-100">
+    <div className="min-h-screen pb-[80px] bg-rustic-50">
       {/* Search Header */}
-      <div className="sticky top-0 z-40 bg-rustic-800/95 backdrop-blur-xl px-6 pt-12 pb-6 flex flex-col gap-4 border-b border-white/5 shadow-2xl">
+      <div className="sticky top-0 z-40 bg-rustic-900 backdrop-blur-xl px-6 pt-12 pb-6 flex flex-col gap-4 border-b border-white/10 shadow-2xl">
         <div className="flex justify-between items-end">
           <div className="space-y-0.5">
             <h2 className="font-serif italic text-sm text-rustic-200/80 leading-none">Painel Logístico</h2>
             <h1 className="text-2xl font-black tracking-tight text-white leading-none">Pátio Santa Luzia</h1>
           </div>
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-rustic-600 to-rustic-500 flex items-center justify-center text-white font-black shadow-lg shadow-rustic-900/20 transform rotate-3 border border-white/20">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-rustic-600 to-rustic-800 flex items-center justify-center text-white font-black shadow-lg shadow-rustic-900/20 transform rotate-3 border border-white/20">
             3C
           </div>
         </div>
         
         <div className="relative mt-2">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/40" size={18} />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/50" size={18} />
           <input 
             type="text" 
             placeholder="Buscar placa ou destino..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-white/10 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-rustic-600 transition-all shadow-inner"
+            className="w-full bg-rustic-800 border border-white/10 rounded-2xl pl-12 pr-4 py-4 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-rustic-500 transition-all shadow-inner"
           />
         </div>
 
@@ -396,9 +419,19 @@ export default function App() {
                     <p className="text-[11px] font-black text-rustic-600 uppercase tracking-[0.25em] leading-tight">{v.destino}</p>
                     <h3 className="text-3xl font-black text-rustic-900 font-mono tracking-tighter leading-none">{v.cavalo}</h3>
                   </div>
-                  <div className="text-right bg-rustic-50 px-3 py-2 rounded-xl border border-stone-100">
-                    <p className="text-[9px] font-black text-stone-400 uppercase tracking-widest leading-tight mb-1">Carreta</p>
-                    <p className="text-sm font-black text-stone-800 font-mono leading-none">{v.carreta}</p>
+                  <div className="flex flex-col items-end gap-2">
+                    <div className="text-right bg-rustic-50 px-3 py-2 rounded-xl border border-rustic-100">
+                      <p className="text-[9px] font-black text-stone-400 uppercase tracking-widest leading-tight mb-1">Carreta</p>
+                      <p className="text-sm font-black text-rustic-900 font-mono leading-none">{v.carreta}</p>
+                    </div>
+                    {v.assinado && (
+                      <button 
+                        onClick={() => deleteDoc(doc(db, 'vehicles', v.id))}
+                        className="text-[10px] font-black text-red-500 uppercase tracking-wider hover:text-red-700"
+                      >
+                        Remover
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -407,7 +440,7 @@ export default function App() {
                     onClick={() => updateVehicle(v.id, 'estaNoPatio', !v.estaNoPatio)}
                     className={cn(
                       "flex items-center justify-center gap-2 py-4.5 rounded-[1.25rem] text-[11px] font-black uppercase tracking-wider transition-all border shadow-sm active:scale-95",
-                      v.estaNoPatio ? "bg-rustic-800 text-white border-rustic-800 shadow-xl shadow-rustic-900/20" : "bg-stone-50 text-stone-600 border-stone-200"
+                      v.estaNoPatio ? "bg-rustic-600 text-white border-rustic-600 shadow-xl shadow-rustic-600/20" : "bg-white text-stone-600 border-stone-200 hover:border-rustic-200"
                     )}
                   >
                     {v.estaNoPatio ? <Check size={18} strokeWidth={3} /> : <X size={18} strokeWidth={3} />}
@@ -417,7 +450,7 @@ export default function App() {
                     onClick={() => updateVehicle(v.id, 'assinado', !v.assinado)}
                     className={cn(
                       "flex items-center justify-center gap-2 py-4.5 rounded-[1.25rem] text-[11px] font-black uppercase tracking-wider transition-all border shadow-sm active:scale-95",
-                      v.assinado ? "bg-rustic-600 text-white border-rustic-600 shadow-xl shadow-rustic-600/20" : "bg-stone-50 text-stone-600 border-stone-200"
+                      v.assinado ? "bg-rustic-800 text-white border-rustic-800 shadow-xl shadow-rustic-900/20" : "bg-white text-stone-600 border-stone-200 hover:border-rustic-200"
                     )}
                   >
                     {v.assinado ? <Check size={18} strokeWidth={3} /> : <X size={18} strokeWidth={3} />}
@@ -533,10 +566,12 @@ export default function App() {
                 <div className="space-y-3">
                   <p className="text-[10px] font-black text-stone-400 uppercase tracking-widest pl-1">Manutenção</p>
                   <button 
-                    onClick={() => {
+                    onClick={async () => {
                       if(confirm('⚠️ ATENÇÃO: Esta ação irá apagar TODOS os veículos salvos. Deseja continuar?')) {
-                        setVehicles([]);
-                        localStorage.removeItem('patri-control-data-v2');
+                        const batch = writeBatch(db);
+                        const qs = await getDocs(collection(db, 'vehicles'));
+                        qs.forEach(doc => batch.delete(doc.ref));
+                        await batch.commit();
                       }
                     }}
                     className="w-full flex items-center justify-between p-5 bg-stone-50 border border-stone-100 rounded-2xl active:scale-[0.98] transition-all group"
@@ -599,17 +634,17 @@ export default function App() {
             onClick={() => setActiveTab(item.id as any)}
             className={cn(
               "flex flex-col items-center gap-1 px-4 transition-all relative",
-              activeTab === item.id ? "text-rustic-800 scale-110" : "text-stone-500"
+              activeTab === item.id ? "text-rustic-900" : "text-stone-400 hover:text-stone-600"
             )}
           >
             {activeTab === item.id && (
               <motion.div 
                 layoutId="nav-glow"
-                className="absolute -top-4 w-12 h-1.5 bg-rustic-800 rounded-full shadow-[0_0_10px_rgba(15,23,42,0.3)]"
+                className="absolute -top-[1.2rem] w-8 h-1 bg-rustic-900 rounded-full shadow-[0_0_10px_rgba(15,23,42,0.3)]"
               />
             )}
-            <item.icon size={24} strokeWidth={activeTab === item.id ? 2.5 : 2} />
-            <span className={cn("text-[9px] font-black uppercase tracking-widest", activeTab === item.id ? "opacity-100" : "opacity-0")}>{item.label}</span>
+            <item.icon size={22} strokeWidth={activeTab === item.id ? 2.5 : 2} className={cn("transition-transform", activeTab === item.id ? "scale-110" : "scale-100")} />
+            <span className={cn("text-[9px] font-black uppercase tracking-widest transition-opacity", activeTab === item.id ? "opacity-100" : "opacity-40")}>{item.label}</span>
           </button>
         ))}
       </nav>

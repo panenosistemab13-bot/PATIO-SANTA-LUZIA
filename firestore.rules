@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    function isSignedIn() { return request.auth != null; }
+    
+    function isValidVehicle(data) {
+      return data.cavalo is string && data.cavalo.size() <= 20 &&
+             data.carreta is string && data.carreta.size() <= 20 &&
+             data.destino is string && data.destino.size() <= 100 &&
+             data.estaNoPatio is bool &&
+             data.assinado is bool;
+    }
+    
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidVehicle(request.resource.data);
+      allow update: if isSignedIn() && isValidVehicle(request.resource.data) &&
+                      request.resource.data.cavalo == resource.data.cavalo &&
+                      request.resource.data.carreta == resource.data.carreta;
+    }
+  }
+}

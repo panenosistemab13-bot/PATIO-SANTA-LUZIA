@@ -1,0 +1,23 @@
+{
+  "entities": {
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "A vehicle record in the yard",
+      "type": "object",
+      "properties": {
+        "cavalo": { "type": "string", "description": "The plate of the truck" },
+        "carreta": { "type": "string", "description": "The plate of the trailer" },
+        "destino": { "type": "string", "description": "The destination of the load" },
+        "estaNoPatio": { "type": "boolean", "description": "Is the vehicle in the yard" },
+        "assinado": { "type": "boolean", "description": "Is the load signed" }
+      },
+      "required": ["cavalo", "carreta", "destino", "estaNoPatio", "assinado"]
+    }
+  },
+  "firestore": {
+    "vehicles": {
+      "schema": { "$ref": "#/entities/Vehicle" },
+      "description": "The collection of vehicles"
+    }
+  }
+}
