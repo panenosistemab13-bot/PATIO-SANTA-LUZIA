@@ -1,0 +1,10 @@
+{
+  "name": "Controle de Pátio Santa Luzia",
+  "description": "Aplicativo para gestão e monitoramento de pátio de veículos com integração de dados de planilhas e análises gráficas.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
